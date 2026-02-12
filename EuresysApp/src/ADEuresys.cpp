@@ -6,6 +6,10 @@
  * Author: Mark Rivers
  *         University of Chicago
  *
+ * Contributor: Jan Jug
+ *              Cosylab d.d.
+ *              jan.jug@cosylab.com
+ *
  * Created: March 6, 2024
  *
  */
@@ -23,6 +27,7 @@
 #include <cantProceed.h>
 #include <epicsString.h>
 #include <epicsExit.h>
+#include <errlog.h>
 
 #include <ADGenICam.h>
 #include <EGrabber.h>
@@ -38,6 +43,11 @@ using namespace Euresys;
 
 static const char *driverName = "ADEuresys";
 
+/* GenTL system management singleton */
+static EGenTL *pGenTL = NULL;
+static int genTLRefCount = 0;
+static epicsMutex *pGenTLMutex = new epicsMutex();
+
 typedef enum {
     TimeStampCamera,
     TimeStampEPICS
@@ -48,33 +58,57 @@ typedef enum {
     UniqueIdDriver
 } ESUniqueId_t;
 
-/** Configuration function to configure one camera.
+/** Original configuration function for backward compatibility.
  *
- * This function need to be called once for each camera to be used by the IOC. A call to this
- * function instantiates one object from the ADEuresys class.
+ * This function maintains backward compatibility with the old API. The cameraId parameter
+ * is ignored (it was never used in the original implementation). This always connects to
+ * interface 0, device 0, which matches the original behavior.
  * \param[in] portName asyn port name to assign to the camera.
- * \param[in] cameraId  A string identifying the camera to control.
+ * \param[in] cameraId Legacy parameter (ignored - kept for backward compatibility).
  * \param[in] numEGBuffers The number of buffers to allocate in EGrabber.
  *            If set to 0 or omitted the default of 100 will be used.
  * \param[in] maxMemory Maximum memory (in bytes) that this driver is allowed to allocate. 0=unlimited.
  * \param[in] priority The EPICS thread priority for this driver.  0=use asyn default.
  * \param[in] stackSize The size of the stack for the EPICS port thread. 0=use asyn default.
  */
-extern "C" int ADEuresysConfig(const char *portName, const char* cameraId, int numEGBuffers,
-                               size_t maxMemory, int priority, int stackSize)
+extern "C" int ADEuresysConfig(const char *portName, const char* cameraId,
+                               int numEGBuffers, size_t maxMemory, int priority, int stackSize)
 {
     new ADEuresys(portName, cameraId, numEGBuffers, maxMemory, priority, stackSize);
     return asynSuccess;
 }
 
+/** Configuration function to configure one camera with explicit interface and device indices.
+ *
+ * This function need to be called once for each camera to be used by the IOC. A call to this
+ * function instantiates one object from the ADEuresys class.
+ * \param[in] portName asyn port name to assign to the camera.
+ * \param[in] interfaceIndex The GenTL interface index (typically the board/card index).
+ * \param[in] deviceIndex The GenTL device index (camera index on the specified interface).
+ * \param[in] numEGBuffers The number of buffers to allocate in EGrabber.
+ *            If set to 0 or omitted the default of 100 will be used.
+ * \param[in] maxMemory Maximum memory (in bytes) that this driver is allowed to allocate. 0=unlimited.
+ * \param[in] priority The EPICS thread priority for this driver.  0=use asyn default.
+ * \param[in] stackSize The size of the stack for the EPICS port thread. 0=use asyn default.
+ */
+extern "C" int ADEuresysConfig2(const char *portName, int interfaceIndex, int deviceIndex,
+                               int numEGBuffers, size_t maxMemory, int priority, int stackSize)
+{
+    new ADEuresys(portName, interfaceIndex, deviceIndex, numEGBuffers,
+                  maxMemory, priority, stackSize);
+    return asynSuccess;
+}
+
 class myGrabber : public EGRABBER_CALLBACK {
 public:
-    myGrabber(EGenTL *gentl, class ADEuresys *pADEuresys) : EGRABBER_CALLBACK(*gentl) {
+    myGrabber(EGenTL *gentl, int interfaceIndex, int deviceIndex,
+              class ADEuresys *pADEuresys)
+        : EGRABBER_CALLBACK(*gentl, interfaceIndex, deviceIndex) {
         pADEuresys_ = pADEuresys;
         enableEvent<NewBufferData>();
     }
 private:
-    class ADEuresys *pADEuresys_;  
+    class ADEuresys *pADEuresys_;
     virtual void onNewBufferEvent(const NewBufferData &data) {
         ScopedBuffer buf(*this, data);
         pADEuresys_->processFrame(buf);
@@ -88,28 +122,116 @@ static void c_shutdown(void *arg)
    p->shutdown();
 }
 
-/** Constructor for the ADEuresys class
+/** Initialize the GenTL singleton.
+ * This method creates the GenTL system object on first call and increments reference count.
+ */
+void ADEuresys::initGenTL()
+{
+    static const char *functionName = "initGenTL";
+
+    pGenTLMutex->lock();
+    if (pGenTL == NULL) {
+        try {
+            pGenTL = new EGenTL();
+            errlogPrintf("%s::%s: Created GenTL system singleton\n",
+                         driverName, functionName);
+        }
+        catch (std::exception &e) {
+            errlogPrintf("%s::%s ERROR: Failed to create GenTL system: %s\n",
+                         driverName, functionName, e.what());
+            pGenTLMutex->unlock();
+            throw;
+        }
+    }
+    genTLRefCount++;
+    errlogPrintf("%s::%s: GenTL reference count = %d\n",
+                 driverName, functionName, genTLRefCount);
+    pGenTLMutex->unlock();
+}
+
+/** Cleanup the GenTL singleton.
+ * This method decrements reference count and deletes the GenTL system object when count reaches zero.
+ */
+void ADEuresys::cleanupGenTL()
+{
+    static const char *functionName = "cleanupGenTL";
+
+    pGenTLMutex->lock();
+    genTLRefCount--;
+    errlogPrintf("%s::%s: GenTL reference count = %d\n",
+                 driverName, functionName, genTLRefCount);
+
+    if (genTLRefCount <= 0 && pGenTL != NULL) {
+        delete pGenTL;
+        pGenTL = NULL;
+        errlogPrintf("%s::%s: Deleted GenTL system singleton\n",
+                     driverName, functionName);
+    }
+    pGenTLMutex->unlock();
+}
+
+/** Legacy constructor for backward compatibility.
+ * Ignores cameraId and uses interface 0, device 0 (matching original behavior).
  * \param[in] portName asyn port name to assign to the camera.
- * \param[in] cameraId  A string identifying the camera to control.
+ * \param[in] cameraId Legacy parameter (ignored).
+ * \param[in] numEGBuffers The number of buffers to allocate in EGrabber.
+ * \param[in] maxMemory Maximum memory (in bytes) that this driver is allowed to allocate. 0=unlimited.
+ * \param[in] priority The EPICS thread priority for this driver.  0=use asyn default.
+ * \param[in] stackSize The size of the stack for the EPICS port thread. 0=use asyn default.
+ */
+ADEuresys::ADEuresys(const char *portName, const char* cameraId, int numEGBuffers,
+                     size_t maxMemory, int priority, int stackSize)
+    : ADEuresys(portName, 0, 0, numEGBuffers, maxMemory, priority, stackSize)
+{
+    // Delegate to new constructor with interface 0, device 0
+    // Note: cameraId parameter is ignored as it was never used in the original implementation
+}
+
+/** Constructor for the ADEuresys class with explicit interface and device indices.
+ * \param[in] portName asyn port name to assign to the camera.
+ * \param[in] interfaceIndex The GenTL interface index (typically the board/card index).
+ * \param[in] deviceIndex The GenTL device index (camera index on the specified interface).
  * \param[in] numEGBuffers The number of buffers to allocate in EGrabber.
  *            If set to 0 or omitted the default of 100 will be used.
  * \param[in] maxMemory Maximum memory (in bytes) that this driver is allowed to allocate. 0=unlimited.
  * \param[in] priority The EPICS thread priority for this driver.  0=use asyn default.
  * \param[in] stackSize The size of the stack for the EPICS port thread. 0=use asyn default.
  */
-ADEuresys::ADEuresys(const char *portName, const char* cameraId, int numEGBuffers,
-                     size_t maxMemory, int priority, int stackSize )
+ADEuresys::ADEuresys(const char *portName, int interfaceIndex, int deviceIndex,
+                     int numEGBuffers, size_t maxMemory, int priority, int stackSize )
     : ADGenICam(portName, maxMemory, priority, stackSize),
     numEGBuffers_(numEGBuffers), exiting_(0), uniqueId_(0)
 {
-    //static const char *functionName = "ADEuresys";
-    
+    static const char *functionName = "ADEuresys";
+
     //pasynTrace->setTraceMask(pasynUserSelf, ASYN_TRACE_ERROR | ASYN_TRACE_WARNING | ASYN_TRACEIO_DRIVER);
-    
+
     if (numEGBuffers_ == 0) numEGBuffers_ = 100;
-    EGenTL *gentl = new EGenTL;
-    mGrabber_ = new myGrabber(gentl, this);
-    mGrabber_->reallocBuffers(numEGBuffers);
+
+    // Initialize the singleton GenTL system (increments ref count)
+    initGenTL();
+
+    try {
+        // Create EGrabber with specific interface and device indices using singleton
+        mGrabber_ = new myGrabber(pGenTL, interfaceIndex, deviceIndex, this);
+        mGrabber_->reallocBuffers(numEGBuffers);
+
+        asynPrint(pasynUserSelf, ASYN_TRACE_FLOW,
+                  "%s::%s connected to interface %d, device %d\n",
+                  driverName, functionName, interfaceIndex, deviceIndex);
+    }
+    catch (std::exception &e) {
+        asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
+                  "%s::%s ERROR creating EGrabber for interface %d, device %d: %s\n",
+                  driverName, functionName, interfaceIndex, deviceIndex, e.what());
+        // Clean up mGrabber_ if it was created but reallocBuffers failed
+        if (mGrabber_) {
+            delete mGrabber_;
+            mGrabber_ = NULL;
+        }
+        cleanupGenTL();  // Decrement ref count since we failed
+        throw;
+    }
  
     createParam(ESTimeStampModeString,              asynParamInt32,   &ESTimeStampMode);
     createParam(ESUniqueIdModeString,               asynParamInt32,   &ESUniqueIdMode);
@@ -151,12 +273,17 @@ EGRABBER_CALLBACK* ADEuresys::getGrabber() {
 
 void ADEuresys::shutdown(void)
 {
-    //static const char *functionName = "shutdown";
     lock();
     exiting_ = 1;
     stopCapture();
-    delete mGrabber_;
+    if (mGrabber_) {
+        delete mGrabber_;
+        mGrabber_ = NULL;
+    }
     unlock();
+
+    // Decrement GenTL reference count and cleanup if last instance
+    cleanupGenTL();
 }
 
 GenICamFeature *ADEuresys::createFeature(GenICamFeatureSet *set, 
@@ -439,6 +566,7 @@ void ADEuresys::report(FILE *fp, int details)
     return;
 }
 
+// Legacy iocsh configuration for backward compatibility
 static const iocshArg configArg0 = {"Port name", iocshArgString};
 static const iocshArg configArg1 = {"Camera ID", iocshArgString};
 static const iocshArg configArg2 = {"# EGrabber buffers", iocshArgInt};
@@ -446,22 +574,44 @@ static const iocshArg configArg3 = {"maxMemory", iocshArgInt};
 static const iocshArg configArg4 = {"priority", iocshArgInt};
 static const iocshArg configArg5 = {"stackSize", iocshArgInt};
 static const iocshArg * const configArgs[] = {&configArg0,
-                                              &configArg1,
-                                              &configArg2,
-                                              &configArg3,
-                                              &configArg4,
-                                              &configArg5};
+                                                     &configArg1,
+                                                     &configArg2,
+                                                     &configArg3,
+                                                     &configArg4,
+                                                     &configArg5};
 static const iocshFuncDef configADEuresys = {"ADEuresysConfig", 6, configArgs};
 static void configCallFunc(const iocshArgBuf *args)
 {
-    ADEuresysConfig(args[0].sval, args[1].sval, args[2].ival, args[3].ival, 
-                    args[4].ival, args[5].ival);
+    ADEuresysConfig(args[0].sval, args[1].sval, args[2].ival,
+                    args[3].ival, args[4].ival, args[5].ival);
 }
 
+// New iocsh configuration with explicit interface and device indices
+static const iocshArg config2Arg0 = {"Port name", iocshArgString};
+static const iocshArg config2Arg1 = {"Interface index", iocshArgInt};
+static const iocshArg config2Arg2 = {"Device index", iocshArgInt};
+static const iocshArg config2Arg3 = {"# EGrabber buffers", iocshArgInt};
+static const iocshArg config2Arg4 = {"maxMemory", iocshArgInt};
+static const iocshArg config2Arg5 = {"priority", iocshArgInt};
+static const iocshArg config2Arg6 = {"stackSize", iocshArgInt};
+static const iocshArg * const config2Args[] = {&config2Arg0,
+                                              &config2Arg1,
+                                              &config2Arg2,
+                                              &config2Arg3,
+                                              &config2Arg4,
+                                              &config2Arg5,
+                                              &config2Arg6};
+static const iocshFuncDef configADEuresys2 = {"ADEuresysConfig2", 7, config2Args};
+static void configCallFunc2(const iocshArgBuf *args)
+{
+    ADEuresysConfig2(args[0].sval, args[1].ival, args[2].ival, args[3].ival,
+                     args[4].ival, args[5].ival, args[6].ival);
+}
 
 static void ADEuresysRegister(void)
 {
     iocshRegister(&configADEuresys, configCallFunc);
+    iocshRegister(&configADEuresys2, configCallFunc2);
 }
 
 extern "C" {

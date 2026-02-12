@@ -1,0 +1,100 @@
+< envPaths
+errlogInit(20000)
+
+dbLoadDatabase("$(TOP)/dbd/EuresysApp.dbd")
+EuresysApp_registerRecordDeviceDriver(pdbbase)
+
+# Multi-camera configuration example
+# This example shows how to configure 3 cameras on a single Euresys card
+
+# Common settings
+epicsEnvSet("PREFIX", "13ES1:")
+epicsEnvSet("QSIZE",  "2000")
+epicsEnvSet("NCHANS", "2048")
+epicsEnvSet("CBUFFS", "500")
+epicsEnvSet("XSIZE",  "4096")
+epicsEnvSet("YSIZE",  "3072")
+epicsEnvSet("NELEMENTS", "12582912")  # Enough for 4096x3072 mono image
+
+# Database file paths
+epicsEnvSet("EPICS_DB_INCLUDE_PATH", "$(ADCORE)/db;$(ADGENICAM)/db;$(ADEURESYS)/db")
+epicsEnvSet("GENICAM_DB_FILE", "$(ADGENICAM)/db/Adimec_Q12A180CXP_1_1_5.template")
+
+# Interface 0 = first Euresys card in the system
+epicsEnvSet("INTERFACE_ID", "0")
+
+#==============================================================================
+# Camera 1 configuration (Interface 0, Device 0)
+#==============================================================================
+epicsEnvSet("PORT1",   "ES1_CAM1")
+
+# ADEuresysConfig2(portName, interfaceIndex, deviceIndex, numBuffers, maxMemory, priority, stackSize)
+ADEuresysConfig2("$(PORT1)", $(INTERFACE_ID), 0, 100, 0, 0, 0)
+asynSetTraceIOMask($(PORT1), 0, ESCAPE)
+
+# Load database records for Camera 1
+dbLoadRecords("$(ADEURESYS)/db/Euresys.template", "P=$(PREFIX),R=cam1:,PORT=$(PORT1)")
+dbLoadRecords("$(GENICAM_DB_FILE)",                                     "P=$(PREFIX),R=cam1:,PORT=$(PORT1)")
+dbLoadRecords("$(ADGENICAM)/db/Euresys_Coaxlink_TLDevice.template",     "P=$(PREFIX),R=cam1:,PORT=$(PORT1)")
+dbLoadRecords("$(ADGENICAM)/db/Euresys_Coaxlink_TLDataStream.template", "P=$(PREFIX),R=cam1:,PORT=$(PORT1)")
+dbLoadRecords("$(ADGENICAM)/db/Euresys_Coaxlink_TLInterface.template",  "P=$(PREFIX),R=cam1:,PORT=$(PORT1)")
+dbLoadRecords("$(ADGENICAM)/db/Euresys_Coaxlink_TLSystem.template",     "P=$(PREFIX),R=cam1:,PORT=$(PORT1)")
+
+# Camera 1 plugins
+NDStdArraysConfigure("Image1", 5, 0, "$(PORT1)", 0, 0)
+dbLoadRecords("$(ADCORE)/db/NDStdArrays.template", "P=$(PREFIX),R=image1:,PORT=Image1,ADDR=0,TIMEOUT=1,NDARRAY_PORT=$(PORT1),TYPE=Int8,FTVL=CHAR,NELEMENTS=$(NELEMENTS)")
+
+#==============================================================================
+# Camera 2 configuration (Interface 0, Device 1)
+#==============================================================================
+epicsEnvSet("PORT2",   "ES1_CAM2")
+
+# ADEuresysConfig2(portName, interfaceIndex, deviceIndex, numBuffers, maxMemory, priority, stackSize)
+ADEuresysConfig2("$(PORT2)", $(INTERFACE_ID), 1, 100, 0, 0, 0)
+asynSetTraceIOMask($(PORT2), 0, ESCAPE)
+
+# Load database records for Camera 2
+dbLoadRecords("$(ADEURESYS)/db/Euresys.template", "P=$(PREFIX),R=cam2:,PORT=$(PORT2)")
+dbLoadRecords("$(GENICAM_DB_FILE)",                                     "P=$(PREFIX),R=cam2:,PORT=$(PORT2)")
+dbLoadRecords("$(ADGENICAM)/db/Euresys_Coaxlink_TLDevice.template",     "P=$(PREFIX),R=cam2:,PORT=$(PORT2)")
+dbLoadRecords("$(ADGENICAM)/db/Euresys_Coaxlink_TLDataStream.template", "P=$(PREFIX),R=cam2:,PORT=$(PORT2)")
+dbLoadRecords("$(ADGENICAM)/db/Euresys_Coaxlink_TLInterface.template",  "P=$(PREFIX),R=cam2:,PORT=$(PORT2)")
+dbLoadRecords("$(ADGENICAM)/db/Euresys_Coaxlink_TLSystem.template",     "P=$(PREFIX),R=cam2:,PORT=$(PORT2)")
+
+# Camera 2 plugins
+NDStdArraysConfigure("Image2", 5, 0, "$(PORT2)", 0, 0)
+dbLoadRecords("$(ADCORE)/db/NDStdArrays.template", "P=$(PREFIX),R=image2:,PORT=Image2,ADDR=0,TIMEOUT=1,NDARRAY_PORT=$(PORT2),TYPE=Int8,FTVL=CHAR,NELEMENTS=$(NELEMENTS)")
+
+#==============================================================================
+# Camera 3 configuration (Interface 0, Device 2)
+#==============================================================================
+epicsEnvSet("PORT3",   "ES1_CAM3")
+
+# ADEuresysConfig2(portName, interfaceIndex, deviceIndex, numBuffers, maxMemory, priority, stackSize)
+ADEuresysConfig2("$(PORT3)", $(INTERFACE_ID), 2, 100, 0, 0, 0)
+asynSetTraceIOMask($(PORT3), 0, ESCAPE)
+
+# Load database records for Camera 3
+dbLoadRecords("$(ADEURESYS)/db/Euresys.template", "P=$(PREFIX),R=cam3:,PORT=$(PORT3)")
+dbLoadRecords("$(GENICAM_DB_FILE)",                                     "P=$(PREFIX),R=cam3:,PORT=$(PORT3)")
+dbLoadRecords("$(ADGENICAM)/db/Euresys_Coaxlink_TLDevice.template",     "P=$(PREFIX),R=cam3:,PORT=$(PORT3)")
+dbLoadRecords("$(ADGENICAM)/db/Euresys_Coaxlink_TLDataStream.template", "P=$(PREFIX),R=cam3:,PORT=$(PORT3)")
+dbLoadRecords("$(ADGENICAM)/db/Euresys_Coaxlink_TLInterface.template",  "P=$(PREFIX),R=cam3:,PORT=$(PORT3)")
+dbLoadRecords("$(ADGENICAM)/db/Euresys_Coaxlink_TLSystem.template",     "P=$(PREFIX),R=cam3:,PORT=$(PORT3)")
+
+# Camera 3 plugins
+NDStdArraysConfigure("Image3", 5, 0, "$(PORT3)", 0, 0)
+dbLoadRecords("$(ADCORE)/db/NDStdArrays.template", "P=$(PREFIX),R=image3:,PORT=Image3,ADDR=0,TIMEOUT=1,NDARRAY_PORT=$(PORT3),TYPE=Int8,FTVL=CHAR,NELEMENTS=$(NELEMENTS)")
+
+#==============================================================================
+# Common plugins (can be loaded once for all cameras or per camera as needed)
+#==============================================================================
+# Uncomment to load common plugins for the first camera
+# set_requestfile_path("$(ADGENICAM)/db")
+# set_requestfile_path("$(ADEURESYS)/db")
+# < $(ADCORE)/iocBoot/commonPlugins.cmd
+
+iocInit()
+
+# Save settings every thirty seconds
+create_monitor_set("auto_settings.req", 30,"P=$(PREFIX)")
