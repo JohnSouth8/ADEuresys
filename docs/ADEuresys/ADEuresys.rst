@@ -188,6 +188,29 @@ multiple cameras from one computer.
 
 ``stackSize`` is the stack size.  0 means medium size.
 
+A secondary command is available to allow for the selection of both the interface (card) and device (camera)::
+
+  ADEuresysConfig2(const char *portName, int interfaceIndex, int deviceIndex,
+                   int numEGBuffers, size_t maxMemory, int priority, int stackSize)
+
+``portName`` is the name for the ADEuresys port driver
+
+``interfaceIndex`` is used to select the framegrabber card.
+If there is only one framegrabber card, use 0. If there are multiple, you can use the EGrabber_ utilities (such as
+eGrabber Studio) to figure out the topology of the system.
+
+``deviceIndex`` is used to select the camera on the chosen framegrabber.
+
+``numEGBuffers`` is the number of buffers to allocate in EGrabber. If set to 0 or omitted the default of 100 will be used.
+
+``maxMemory`` is the maximum amount of memory the NDArrayPool is allowed to allocate.  0 means unlimited.
+
+``priority`` is the priority of the port thread.  0 means medium priority.
+
+``stackSize`` is the stack size.  0 means medium size.
+
+An example for setting up three cameras on one framegrabber can be found in the Adimec example IOC directory.
+
 Cameras Tested
 --------------
 ADEuresys_ has been tested with 3 very different cameras, shown in the following table.
