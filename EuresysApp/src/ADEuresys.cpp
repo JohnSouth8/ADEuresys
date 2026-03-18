@@ -27,7 +27,6 @@
 #include <cantProceed.h>
 #include <epicsString.h>
 #include <epicsExit.h>
-#include <errlog.h>
 
 #include <ADGenICam.h>
 #include <EGrabber.h>
@@ -42,11 +41,6 @@ using namespace Euresys;
 #define DRIVER_MODIFICATION 0
 
 static const char *driverName = "ADEuresys";
-
-/* GenTL system management singleton */
-static EGenTL *pGenTL = NULL;
-static int genTLRefCount = 0;
-static epicsMutex *pGenTLMutex = new epicsMutex();
 
 typedef enum {
     TimeStampCamera,
@@ -122,53 +116,6 @@ static void c_shutdown(void *arg)
    p->shutdown();
 }
 
-/** Initialize the GenTL singleton.
- * This method creates the GenTL system object on first call and increments reference count.
- */
-void ADEuresys::initGenTL()
-{
-    static const char *functionName = "initGenTL";
-
-    pGenTLMutex->lock();
-    if (pGenTL == NULL) {
-        try {
-            pGenTL = new EGenTL();
-            errlogPrintf("%s::%s: Created GenTL system singleton\n",
-                         driverName, functionName);
-        }
-        catch (std::exception &e) {
-            errlogPrintf("%s::%s ERROR: Failed to create GenTL system: %s\n",
-                         driverName, functionName, e.what());
-            pGenTLMutex->unlock();
-            throw;
-        }
-    }
-    genTLRefCount++;
-    errlogPrintf("%s::%s: GenTL reference count = %d\n",
-                 driverName, functionName, genTLRefCount);
-    pGenTLMutex->unlock();
-}
-
-/** Cleanup the GenTL singleton.
- * This method decrements reference count and deletes the GenTL system object when count reaches zero.
- */
-void ADEuresys::cleanupGenTL()
-{
-    static const char *functionName = "cleanupGenTL";
-
-    pGenTLMutex->lock();
-    genTLRefCount--;
-    errlogPrintf("%s::%s: GenTL reference count = %d\n",
-                 driverName, functionName, genTLRefCount);
-
-    if (genTLRefCount <= 0 && pGenTL != NULL) {
-        delete pGenTL;
-        pGenTL = NULL;
-        errlogPrintf("%s::%s: Deleted GenTL system singleton\n",
-                     driverName, functionName);
-    }
-    pGenTLMutex->unlock();
-}
 
 /** Legacy constructor for backward compatibility.
  * Ignores cameraId and uses interface 0, device 0 (matching original behavior).
@@ -208,12 +155,22 @@ ADEuresys::ADEuresys(const char *portName, int interfaceIndex, int deviceIndex,
 
     if (numEGBuffers_ == 0) numEGBuffers_ = 100;
 
-    // Initialize the singleton GenTL system (increments ref count)
-    initGenTL();
+    /* GenTL system management singleton via shared/weak pointer */
+    static std::weak_ptr<EGenTL> staticGenTL;
+
+    // init genTL
+    pGenTL_ = staticGenTL.lock();               // get the shared pointer if it exists
+    if (!pGenTL_) {                             // if it does not exist, create it
+        pGenTL_ = std::make_shared<EGenTL>();
+        staticGenTL = pGenTL_;
+        asynPrint(pasynUserSelf, ASYN_TRACE_FLOW,
+                    "%s::%s: created GenTL system singleton\n",
+                    driverName, functionName);
+    }
 
     try {
         // Create EGrabber with specific interface and device indices using singleton
-        mGrabber_ = new myGrabber(pGenTL, interfaceIndex, deviceIndex, this);
+        mGrabber_ = new myGrabber(pGenTL_.get(), interfaceIndex, deviceIndex, this);
         mGrabber_->reallocBuffers(numEGBuffers);
 
         asynPrint(pasynUserSelf, ASYN_TRACE_FLOW,
@@ -229,7 +186,6 @@ ADEuresys::ADEuresys(const char *portName, int interfaceIndex, int deviceIndex,
             delete mGrabber_;
             mGrabber_ = NULL;
         }
-        cleanupGenTL();  // Decrement ref count since we failed
         throw;
     }
  
@@ -282,8 +238,7 @@ void ADEuresys::shutdown(void)
     }
     unlock();
 
-    // Decrement GenTL reference count and cleanup if last instance
-    cleanupGenTL();
+    pGenTL_.reset();
 }
 
 GenICamFeature *ADEuresys::createFeature(GenICamFeatureSet *set, 

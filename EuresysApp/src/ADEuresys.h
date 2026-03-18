@@ -2,7 +2,7 @@
 #define ADEURESYS_H
 
 #include <epicsEvent.h>
-#include <epicsMutex.h>
+#include <memory>
 
 #include <ADGenICam.h>
 #include <EGrabber.h>
@@ -50,9 +50,6 @@ public:
     void shutdown();
 
 private:
-    /* Static methods for GenTL singleton management */
-    static void initGenTL();
-    static void cleanupGenTL();
 
     /* parameters */
     int ESTimeStampMode;
@@ -79,6 +76,7 @@ private:
 
     /* Data */
     EGRABBER_CALLBACK *mGrabber_;
+    std::shared_ptr<EGenTL> pGenTL_;
     int numEGBuffers_;
     int bitsPerPixel_;
     int exiting_;
